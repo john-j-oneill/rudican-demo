@@ -44,7 +44,18 @@ void pack_32(unsigned char &most_significant_byte,
     least_significant_byte = (value_in & 0xFF);
 }
 
-void callback(const ros::TimerEvent&)
+unsigned int unpack_24(const unsigned char most_significant_byte,
+                       const unsigned char more_significant_byte,
+                       const unsigned char least_significant_byte)
+{
+    unsigned int retval = (((unsigned int) most_significant_byte) << 16)
+                        + (((unsigned int) more_significant_byte) << 8)
+                        + (((unsigned int) least_significant_byte) << 0);
+    return retval;
+}
+
+
+void timer_callback(const ros::TimerEvent&)
 {
 	can_msgs::Frame can_msg;
 
@@ -56,13 +67,18 @@ void callback(const ros::TimerEvent&)
 	can_msg.header.frame_id = "0";  // "0" for no frame.
 	can_msg.header.stamp = ros::Time::now();
 
-	can_msg.id = 0xFADE;
+	can_msg.id = 0xFACE;
 
-    /// Pack the timestamp into the message so we can measure delays or 
+    /// Pack the timestamp into the message so we can measure delays or drops
     unsigned int seconds = can_msg.header.stamp.sec;
     unsigned int microseconds = can_msg.header.stamp.nsec / 1000;
-	pack_16(can_msg.data[1],can_msg.data[0],velocity);
-	pack_24(can_msg.data[3],can_msg.data[2],can_msg.data[1],velocity);
+    /// Only grab the 8 least significant bits of seconds,
+    /// 255 seconds is plenty long to detect delays/drops/etc.
+    pack_8(can_msg.data[0],seconds);
+    /// Microseconds only require 10^6 or ~2^20 bits, so use 24 bits
+    pack_24(can_msg.data[3],can_msg.data[2],can_msg.data[1],microseconds);
+    /// Leave the remaining 32 bits empty so they can be added by the response
+    pack_32(can_msg.data[7],can_msg.data[6],can_msg.data[5],can_msg.data[4],0);
     
 	can_pub.publish(can_msg);
 
@@ -86,7 +102,12 @@ void can_receive_callback(const can_msgs::Frame::ConstPtr& msg)
                      msg->data[5],
                      msg->data[6],
                      msg->data[7]);
-
+            unsigned int sent_us = unpack_24(msg->data[3],msg->data[2],msg->data[1]);
+            unsigned int sent_sec = (unsigned int) msg->data[0];
+            unsigned int recv_us = unpack_24(msg->data[7],msg->data[6],msg->data[5]);
+            unsigned int recv_sec = (unsigned int) msg->data[4];
+            ROS_INFO("Got echo, sent %03d.%06d, recv %03d.%06d",
+                     sent_sec,sent_us,recv_sec,recv_us);
 			break;
 		}
 	}
@@ -105,7 +126,9 @@ int main (int argc, char** argv)
 	can_pub = nh->advertise<can_msgs::Frame>("/sent_messages", 50);
 
     /// Time based callback, 100Hz
-    ros::Timer timer = nh.createTimer(ros::Duration(0.01), timerCallback);
+    double dt = 1.0/100.0;
+    nh->getParam("dt",dt);
+    ros::Timer timer = nh->createTimer(ros::Duration(dt), timer_callback);
 
 	// Spin
 	ros::spin ();
