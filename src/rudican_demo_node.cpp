@@ -8,6 +8,9 @@
 ros::NodeHandle *nh;
 ros::Publisher can_pub;
 
+/// Globals
+bool debug = true;
+
 void pack_8(unsigned char &least_significant_byte, 
             unsigned int   value_in)
 {
@@ -63,6 +66,7 @@ void timer_callback(const ros::TimerEvent&)
 	can_msg.is_extended = true;
 	can_msg.is_rtr = false;
 	can_msg.is_error = false;
+	can_msg.dlc = 8;
 	//header frame doesnt matter
 	can_msg.header.frame_id = "0";  // "0" for no frame.
 	can_msg.header.stamp = ros::Time::now();
@@ -81,6 +85,15 @@ void timer_callback(const ros::TimerEvent&)
     pack_32(can_msg.data[7],can_msg.data[6],can_msg.data[5],can_msg.data[4],0);
     
 	can_pub.publish(can_msg);
+    ROS_INFO_COND(debug,"Sent FACE message, 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X",
+                  can_msg.data[0],
+                  can_msg.data[1],
+                  can_msg.data[2],
+                  can_msg.data[3],
+                  can_msg.data[4],
+                  can_msg.data[5],
+                  can_msg.data[6],
+                  can_msg.data[7]);
 
 }
 
@@ -93,21 +106,26 @@ void can_receive_callback(const can_msgs::Frame::ConstPtr& msg)
 
         /// Example message catcher
 		case 0xFADE:	{
-            ROS_INFO("Got FADE message, 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X",
-                     msg->data[0],
-                     msg->data[1],
-                     msg->data[2],
-                     msg->data[3],
-                     msg->data[4],
-                     msg->data[5],
-                     msg->data[6],
-                     msg->data[7]);
+            ROS_INFO_COND(debug,"Got FADE message, 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X",
+                          msg->data[0],
+                          msg->data[1],
+                          msg->data[2],
+                          msg->data[3],
+                          msg->data[4],
+                          msg->data[5],
+                          msg->data[6],
+                          msg->data[7]);
             unsigned int sent_us = unpack_24(msg->data[3],msg->data[2],msg->data[1]);
             unsigned int sent_sec = (unsigned int) msg->data[0];
-            unsigned int recv_us = unpack_24(msg->data[7],msg->data[6],msg->data[5]);
-            unsigned int recv_sec = (unsigned int) msg->data[4];
-            ROS_INFO("Got echo, sent %03d.%06d, recv %03d.%06d",
-                     sent_sec,sent_us,recv_sec,recv_us);
+            unsigned int bounce_us = unpack_24(msg->data[7],msg->data[6],msg->data[5]);
+            unsigned int bounce_sec = (unsigned int) msg->data[4];
+            ros::Time time = ros::Time::now();
+            unsigned int recv_sec = (time.sec) & 0xFF;
+            unsigned int recv_us = time.nsec / 1000;
+            double dt = ((double) recv_sec + ((double) recv_us / 1e6))
+                      - ((double) sent_sec + ((double) sent_us / 1e6));
+            ROS_INFO("Got echo, sent %03d.%06d, bounce %03d.%06d, recv %03d.%06d, dt=%0.6f",
+                     sent_sec,sent_us,bounce_sec,bounce_us,recv_sec,recv_us,dt);
 			break;
 		}
 	}
@@ -116,7 +134,7 @@ void can_receive_callback(const can_msgs::Frame::ConstPtr& msg)
 int main (int argc, char** argv)
 {
 	//// Initialize ROS
-	ros::init (argc, argv, "rudican-demo_node");
+	ros::init (argc, argv, "rudican_demo_node");
 	nh = new ros::NodeHandle("~");
 
     /// Subscribe to can messages
@@ -128,6 +146,7 @@ int main (int argc, char** argv)
     /// Time based callback, 100Hz
     double dt = 1.0/100.0;
     nh->getParam("dt",dt);
+    nh->getParam("debug",debug);
     ros::Timer timer = nh->createTimer(ros::Duration(dt), timer_callback);
 
 	// Spin
